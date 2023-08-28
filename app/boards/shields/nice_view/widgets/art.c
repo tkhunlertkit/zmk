@@ -16,11 +16,6 @@
 #define LV_ATTRIBUTE_IMG_BALLOON
 #endif
 
-#ifndef LV_ATTRIBUTE_IMG_AERIAL
-#define LV_ATTRIBUTE_IMG_AERIAL
-#endif
-
-
 const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_BALLOON uint8_t
     balloon_map[] = {
 #if CONFIG_NICE_VIEW_WIDGET_INVERTED
@@ -233,6 +228,11 @@ const lv_img_dsc_t mountain = {
     .data = mountain_map,
 };
 
+
+#ifndef LV_ATTRIBUTE_IMG_AERIAL
+#define LV_ATTRIBUTE_IMG_AERIAL
+#endif
+
 const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_AERIAL uint8_t
     aerial_map[] = {
 #if CONFIG_NICE_VIEW_WIDGET_INVERTED
@@ -326,7 +326,7 @@ const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_AERIAL ui
         0x7c, 0x3f, 0x3f, 0xff, 0xc1, 0xff, 0xff, 0xff, 0xff,
 };
 
-const lv_img_dsc_t mountain = {
+const lv_img_dsc_t aerial = {
     .header.cf = LV_IMG_CF_INDEXED_1BIT,
     .header.always_zero = 0,
     .header.reserved = 0,
