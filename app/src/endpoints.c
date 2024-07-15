@@ -263,7 +263,8 @@ static int endpoints_handle_set(const char *name, size_t len, settings_read_cb r
     return 0;
 }
 
-struct settings_handler endpoints_handler = {.name = "endpoints", .h_set = endpoints_handle_set};
+SETTINGS_STATIC_HANDLER_DEFINE(endpoints, "endpoints", NULL, endpoints_handle_set, NULL, NULL);
+
 #endif /* IS_ENABLED(CONFIG_SETTINGS) */
 
 static bool is_usb_ready(void) {
@@ -322,17 +323,7 @@ static struct zmk_endpoint_instance get_selected_instance(void) {
 
 static int zmk_endpoints_init(void) {
 #if IS_ENABLED(CONFIG_SETTINGS)
-    settings_subsys_init();
-
-    int err = settings_register(&endpoints_handler);
-    if (err) {
-        LOG_ERR("Failed to register the endpoints settings handler (err %d)", err);
-        return err;
-    }
-
     k_work_init_delayable(&endpoints_save_work, endpoints_save_preferred_work);
-
-    settings_load_subtree("endpoints");
 #endif
 
     current_instance = get_selected_instance();
@@ -340,7 +331,7 @@ static int zmk_endpoints_init(void) {
     return 0;
 }
 
-static void disconnect_current_endpoint(void) {
+void zmk_endpoints_clear_current(void) {
     zmk_hid_keyboard_clear();
     zmk_hid_consumer_clear();
 #if IS_ENABLED(CONFIG_ZMK_MOUSE)
@@ -356,7 +347,7 @@ static void update_current_endpoint(void) {
 
     if (!zmk_endpoint_instance_eq(new_instance, current_instance)) {
         // Cancel all current keypresses so keys don't stay held on the old endpoint.
-        disconnect_current_endpoint();
+        zmk_endpoints_clear_current();
 
         current_instance = new_instance;
 
