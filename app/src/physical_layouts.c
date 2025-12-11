@@ -9,6 +9,7 @@
 #include <zephyr/pm/device.h>
 #include <zephyr/pm/device_runtime.h>
 #include <zephyr/drivers/kscan.h>
+#include <zephyr/input/input.h>
 
 #if IS_ENABLED(CONFIG_SETTINGS)
 #include <zephyr/settings/settings.h>
@@ -18,13 +19,37 @@
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
+#include <zmk/matrix.h>
 #include <zmk/physical_layouts.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
 
+ZMK_EVENT_IMPL(zmk_physical_layout_selection_changed);
+
 #define DT_DRV_COMPAT zmk_physical_layout
 
-#if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
+#define MATRIX_INPUT_SUPPORT                                                                       \
+    UTIL_AND(IS_ENABLED(CONFIG_INPUT),                                                             \
+             UTIL_OR(DT_ANY_INST_HAS_PROP_STATUS_OKAY(input), DT_HAS_CHOSEN(zmk_matrix_input)))
+
+#if MATRIX_INPUT_SUPPORT
+
+static void zmk_physical_layout_input_event_cb(struct input_event *evt, void *user_data);
+
+#endif
+
+#define USE_PHY_LAYOUTS                                                                            \
+    (DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT) && !DT_HAS_CHOSEN(zmk_matrix_transform))
+
+BUILD_ASSERT(
+    !IS_ENABLED(CONFIG_ZMK_STUDIO) || USE_PHY_LAYOUTS,
+    "ISSUE FOUND: Keyboards require additional configuration to allow for firmware with ZMK "
+    "Studio enabled. You have attempted to build a keyboard lacking such configuration. Please see "
+    "https://zmk.dev/docs/features/studio#adding-zmk-studio-support-to-a-keyboard for "
+    "more information on how to resolve this error, or contact the maintainer of your keyboard's "
+    "firmware for assistance.");
+
+#if USE_PHY_LAYOUTS
 
 #define ZKPA_INIT(i, n)                                                                            \
     (const struct zmk_key_physical_attrs) {                                                        \
@@ -32,12 +57,21 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
         .height = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, height),                        \
         .x = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, x),                                  \
         .y = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, y),                                  \
-        .rx = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, rx),                                \
-        .ry = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, ry),                                \
-        .r = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, r),                                  \
+        COND_CODE_1(IS_ENABLED(CONFIG_ZMK_PHYSICAL_LAYOUT_KEY_ROTATION),                           \
+                    (.rx = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, rx),                   \
+                     .ry = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, ry),                   \
+                     .r = (int16_t)(int32_t)DT_INST_PHA_BY_IDX(n, keys, i, r), ),                  \
+                    ())                                                                            \
     }
 
+#define INPUT_FOR_INST(n)                                                                          \
+    DEVICE_DT_GET(COND_CODE_1(DT_INST_PROP_LEN(n, input), (DT_INST_PHANDLE(n, input)),             \
+                              (DT_CHOSEN(zmk_matrix_input))))
+
 #define ZMK_LAYOUT_INST(n)                                                                         \
+    BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_STUDIO) || DT_INST_NODE_HAS_PROP(n, keys),                 \
+                 "ZMK Studio requires physical layouts with key positions. See "                   \
+                 "https://zmk.dev/docs/development/hardware-integration/studio-setup");            \
     static const struct zmk_key_physical_attrs const _CONCAT(                                      \
         _zmk_physical_layout_keys_, n)[DT_INST_PROP_LEN_OR(n, keys, 0)] = {                        \
         LISTIFY(DT_INST_PROP_LEN_OR(n, keys, 0), ZKPA_INIT, (, ), n)};                             \
@@ -48,8 +82,18 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
         .matrix_transform = ZMK_MATRIX_TRANSFORM_T_FOR_NODE(DT_INST_PHANDLE(n, transform)),        \
         .keys = _CONCAT(_zmk_physical_layout_keys_, n),                                            \
         .keys_len = DT_INST_PROP_LEN_OR(n, keys, 0),                                               \
-        .kscan = DEVICE_DT_GET(COND_CODE_1(DT_INST_PROP_LEN(n, kscan),                             \
-                                           (DT_INST_PHANDLE(n, kscan)), (DT_CHOSEN(zmk_kscan))))};
+        COND_CODE_1(UTIL_AND(MATRIX_INPUT_SUPPORT, DT_INST_PROP_LEN(n, input)),                    \
+                    (.input = INPUT_FOR_INST(n)), ())                                              \
+            COND_CODE_1(UTIL_OR(DT_HAS_CHOSEN(zmk_kscan), DT_INST_PROP_LEN(n, kscan)),             \
+                        (.kscan = DEVICE_DT_GET(COND_CODE_1(DT_INST_PROP_LEN(n, kscan),            \
+                                                            (DT_INST_PHANDLE(n, kscan)),           \
+                                                            (DT_CHOSEN(zmk_kscan))))),             \
+                        ())};                                                                      \
+    COND_CODE_1(                                                                                   \
+        UTIL_AND(MATRIX_INPUT_SUPPORT, DT_INST_PROP_LEN(n, input)),                                \
+        (INPUT_CALLBACK_DEFINE(INPUT_FOR_INST(n), zmk_physical_layout_input_event_cb,              \
+                               (void *)&(_CONCAT(_zmk_physical_layout_, DT_DRV_INST(n))));),       \
+        ())
 
 DT_INST_FOREACH_STATUS_OKAY(ZMK_LAYOUT_INST)
 
@@ -72,9 +116,18 @@ struct position_map_entry {
     const uint32_t positions[ZMK_POS_MAP_LEN];
 };
 
+#define ZMK_POS_MAP_LEN_CHECK(node_id)                                                             \
+    BUILD_ASSERT(ZMK_POS_MAP_LEN == DT_PROP_LEN(node_id, positions),                               \
+                 "Position maps must all have the same number of entries")
+
+DT_FOREACH_CHILD_SEP(DT_INST(0, POS_MAP_COMPAT), ZMK_POS_MAP_LEN_CHECK, (;));
+
 #define ZMK_POS_MAP_ENTRY(node_id)                                                                 \
     {                                                                                              \
-        .layout = &_CONCAT(_zmk_physical_layout_, DT_PHANDLE(node_id, physical_layout)),           \
+        .layout = COND_CODE_1(                                                                     \
+            UTIL_AND(DT_NODE_HAS_COMPAT(DT_PHANDLE(node_id, physical_layout), DT_DRV_COMPAT),      \
+                     DT_NODE_HAS_STATUS(DT_PHANDLE(node_id, physical_layout), okay)),              \
+            (&_CONCAT(_zmk_physical_layout_, DT_PHANDLE(node_id, physical_layout))), (NULL)),      \
         .positions = DT_PROP(node_id, positions),                                                  \
     }
 
@@ -90,6 +143,13 @@ static const struct zmk_physical_layout *const layouts[] = {
 
 #elif DT_HAS_CHOSEN(zmk_matrix_transform)
 
+#if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
+
+#warning                                                                                           \
+    "Ignoring the physical layouts and using the chosen matrix transform. Consider setting a chosen physical layout instead."
+
+#endif
+
 ZMK_MATRIX_TRANSFORM_EXTERN(DT_CHOSEN(zmk_matrix_transform));
 
 static const struct zmk_physical_layout _CONCAT(_zmk_physical_layout_, chosen) = {
@@ -100,14 +160,31 @@ static const struct zmk_physical_layout _CONCAT(_zmk_physical_layout_, chosen) =
 static const struct zmk_physical_layout *const layouts[] = {
     &_CONCAT(_zmk_physical_layout_, chosen)};
 
-#elif DT_HAS_CHOSEN(zmk_kscan)
+#elif UTIL_OR(DT_HAS_CHOSEN(zmk_kscan), DT_HAS_CHOSEN(zmk_matrix_input))
+
+#if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
+
+#warning                                                                                           \
+    "Ignoring the physical layouts and using the chosen kscan/matrix-input with a synthetic transform. Consider setting a chosen physical layout instead."
+
+#endif
 
 ZMK_MATRIX_TRANSFORM_DEFAULT_EXTERN();
 static const struct zmk_physical_layout _CONCAT(_zmk_physical_layout_, chosen) = {
     .display_name = "Default",
     .matrix_transform = &zmk_matrix_transform_default,
+#if DT_HAS_CHOSEN(zmk_matrix_input)
+    .input = DEVICE_DT_GET(DT_CHOSEN(zmk_matrix_input)),
+#elif DT_HAS_CHOSEN(zmk_kscan)
     .kscan = DEVICE_DT_GET(DT_CHOSEN(zmk_kscan)),
+#endif
 };
+
+#if DT_HAS_CHOSEN(zmk_matrix_input)
+INPUT_CALLBACK_DEFINE(DEVICE_DT_GET(DT_CHOSEN(zmk_matrix_input)),
+                      zmk_physical_layout_input_event_cb,
+                      (void *)&(_CONCAT(_zmk_physical_layout_, chosen)));
+#endif
 
 static const struct zmk_physical_layout *const layouts[] = {
     &_CONCAT(_zmk_physical_layout_, chosen)};
@@ -131,10 +208,61 @@ struct zmk_kscan_event {
     uint32_t state;
 };
 
-static struct zmk_kscan_msg_processor { struct k_work work; } msg_processor;
+static struct zmk_kscan_msg_processor {
+    struct k_work work;
+} msg_processor;
 
 K_MSGQ_DEFINE(physical_layouts_kscan_msgq, sizeof(struct zmk_kscan_event),
               CONFIG_ZMK_KSCAN_EVENT_QUEUE_SIZE, 4);
+
+#if MATRIX_INPUT_SUPPORT
+
+static struct zmk_kscan_event pending_input_event;
+
+static void zmk_physical_layout_input_event_cb(struct input_event *evt, void *user_data) {
+    const struct zmk_physical_layout *layout = (const struct zmk_physical_layout *)user_data;
+    if (layout != active) {
+        LOG_WRN("Ignoring input event from non-active layout");
+        return;
+    }
+
+    switch (evt->type) {
+    case INPUT_EV_ABS:
+        switch (evt->code) {
+        case INPUT_ABS_X:
+            pending_input_event.column = evt->value;
+            break;
+        case INPUT_ABS_Y:
+            pending_input_event.row = evt->value;
+            break;
+        default:
+            LOG_WRN("Unknown abs code");
+            return;
+        }
+        break;
+    case INPUT_EV_KEY:
+        switch (evt->code) {
+        case INPUT_BTN_TOUCH:
+            pending_input_event.state =
+                (evt->value ? ZMK_KSCAN_EVENT_STATE_PRESSED : ZMK_KSCAN_EVENT_STATE_RELEASED);
+            break;
+        default:
+            LOG_WRN("Unknown key code");
+            return;
+        }
+        break;
+    default:
+        LOG_WRN("Unknown type");
+        return;
+    }
+
+    if (evt->sync) {
+        k_msgq_put(&physical_layouts_kscan_msgq, &pending_input_event, K_NO_WAIT);
+        k_work_submit(&msg_processor.work);
+    }
+}
+
+#endif
 
 static void zmk_physical_layout_kscan_callback(const struct device *dev, uint32_t row,
                                                uint32_t column, bool pressed) {
@@ -175,6 +303,35 @@ static void zmk_physical_layouts_kscan_process_msgq(struct k_work *item) {
     }
 }
 
+static const struct zmk_physical_layout *get_default_layout(void) {
+    const struct zmk_physical_layout *initial;
+
+#if USE_PHY_LAYOUTS && DT_HAS_CHOSEN(zmk_physical_layout)
+    initial = &_CONCAT(_zmk_physical_layout_, DT_CHOSEN(zmk_physical_layout));
+#else
+    initial = layouts[0];
+#endif
+
+    return initial;
+}
+
+static int get_index_of_layout(const struct zmk_physical_layout *layout) {
+    for (int i = 0; i < ARRAY_SIZE(layouts); i++) {
+        if (layouts[i] == layout) {
+            return i;
+        }
+    }
+
+    return -ENODEV;
+}
+
+static uint32_t selected_to_stock_map[ZMK_KEYMAP_LEN];
+
+int zmk_physical_layouts_get_selected_to_stock_position_map(uint32_t const **map) {
+    *map = selected_to_stock_map;
+    return ZMK_KEYMAP_LEN;
+}
+
 int zmk_physical_layouts_select_layout(const struct zmk_physical_layout *dest_layout) {
     if (!dest_layout) {
         return -ENODEV;
@@ -193,6 +350,15 @@ int zmk_physical_layouts_select_layout(const struct zmk_physical_layout *dest_la
             pm_device_action_run(active->kscan, PM_DEVICE_ACTION_SUSPEND);
 #endif
         }
+    }
+
+    int new_idx = get_index_of_layout(dest_layout);
+    int stock_idx = get_index_of_layout(get_default_layout());
+    int ret = zmk_physical_layouts_get_position_map(stock_idx, new_idx, ZMK_KEYMAP_LEN,
+                                                    selected_to_stock_map);
+    if (ret < 0) {
+        LOG_ERR("Failed to refresh the selected to stock mapping (%d)", ret);
+        return ret;
     }
 
     active = dest_layout;
@@ -219,7 +385,14 @@ int zmk_physical_layouts_select(uint8_t index) {
         return -EINVAL;
     }
 
-    return zmk_physical_layouts_select_layout(layouts[index]);
+    int ret = zmk_physical_layouts_select_layout(layouts[index]);
+
+    if (ret >= 0) {
+        raise_zmk_physical_layout_selection_changed(
+            (struct zmk_physical_layout_selection_changed){.selection = index});
+    }
+
+    return ret;
 }
 
 int zmk_physical_layouts_get_selected(void) {
@@ -239,15 +412,7 @@ static int8_t saved_selected_index = -1;
 #endif
 
 int zmk_physical_layouts_select_initial(void) {
-    const struct zmk_physical_layout *initial;
-
-#if DT_HAS_CHOSEN(zmk_physical_layout)
-    initial = &_CONCAT(_zmk_physical_layout_, DT_CHOSEN(zmk_physical_layout));
-#else
-    initial = layouts[0];
-#endif
-
-    int ret = zmk_physical_layouts_select_layout(initial);
+    int ret = zmk_physical_layouts_select_layout(get_default_layout());
 
     return ret;
 }
@@ -275,13 +440,23 @@ int zmk_physical_layouts_save_selected(void) {
 
 int zmk_physical_layouts_revert_selected(void) { return zmk_physical_layouts_select_initial(); }
 
-int zmk_physical_layouts_get_position_map(uint8_t source, uint8_t dest, uint32_t *map) {
+int zmk_physical_layouts_get_position_map(uint8_t source, uint8_t dest, size_t map_size,
+                                          uint32_t map[map_size]) {
     if (source >= ARRAY_SIZE(layouts) || dest >= ARRAY_SIZE(layouts)) {
         return -EINVAL;
     }
 
+    if (source == dest) {
+        for (int i = 0; i < map_size; i++) {
+            map[i] = i;
+        }
+
+        return 0;
+    }
+
     const struct zmk_physical_layout *src_layout = layouts[source];
     const struct zmk_physical_layout *dest_layout = layouts[dest];
+    int max_kp = dest_layout->keys_len;
 
 #if HAVE_POS_MAP
     const struct position_map_entry *src_pos_map = NULL;
@@ -296,11 +471,24 @@ int zmk_physical_layouts_get_position_map(uint8_t source, uint8_t dest, uint32_t
             dest_pos_map = &positions_maps[pm];
         }
     }
+
+    // Maps can place items "off the end" of other layouts so they are
+    // preserved but not visible, so adjust our max here if that is being used.
+    if (src_pos_map && dest_pos_map) {
+        for (int mp = 0; mp < ZMK_POS_MAP_LEN; mp++) {
+            max_kp =
+                MAX(max_kp, MAX(src_pos_map->positions[mp] + 1, dest_pos_map->positions[mp] + 1));
+        }
+    }
 #endif
 
-    memset(map, UINT32_MAX, dest_layout->keys_len);
+    if (map_size < max_kp) {
+        return -EINVAL;
+    }
 
-    for (int b = 0; b < dest_layout->keys_len; b++) {
+    memset(map, UINT32_MAX, map_size);
+
+    for (int b = 0; b < max_kp; b++) {
         bool found = false;
 
 #if HAVE_POS_MAP
@@ -329,13 +517,9 @@ int zmk_physical_layouts_get_position_map(uint8_t source, uint8_t dest, uint32_t
             }
         }
 #endif
-
-        if (!found || map[b] >= src_layout->keys_len) {
-            map[b] = UINT32_MAX;
-        }
     }
 
-    return dest_layout->keys_len;
+    return max_kp;
 }
 
 #if IS_ENABLED(CONFIG_SETTINGS)
@@ -372,13 +556,17 @@ static int zmk_physical_layouts_init(void) {
 #if IS_ENABLED(CONFIG_PM_DEVICE)
     for (int l = 0; l < ARRAY_SIZE(layouts); l++) {
         const struct zmk_physical_layout *pl = layouts[l];
-        if (pl->kscan) {
-            if (pm_device_wakeup_is_capable(pl->kscan)) {
-                pm_device_wakeup_enable(pl->kscan, true);
-            }
+        if (pl->kscan && pm_device_wakeup_is_capable(pl->kscan) &&
+            !pm_device_wakeup_enable(pl->kscan, true)) {
+            LOG_WRN("Failed to wakeup enable %s", pl->kscan->name);
         }
     }
 #endif // IS_ENABLED(CONFIG_PM_DEVICE)
+
+    // Initialize a sane mapping
+    for (int i = 0; i < ZMK_KEYMAP_LEN; i++) {
+        selected_to_stock_map[i] = i;
+    }
 
     return zmk_physical_layouts_select_initial();
 }
